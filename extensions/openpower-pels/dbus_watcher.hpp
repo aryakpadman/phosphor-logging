@@ -63,6 +63,8 @@ class DBusWatcher
  *    the property is on D-Bus at the time.
  * 2) The property changes (via a property changed signal).
  * 3) An interfacesAdded signal is received with that property.
+ * 4) A nameOwnerChanged signal is received for the owning service
+ *    (only when ownerService is provided).
  *
  * The DataInterface class is used to access D-Bus, and is a template
  * to avoid any circular include issues as that class is one of the
@@ -146,6 +148,65 @@ class PropertyWatcher : public DBusWatcher
                     PropertySetFunc func) :
         PropertyWatcher(bus, path, interface, propertyName, "", dataIface, func)
     {}
+
+    /**
+     * @brief Constructor
+     *
+     * Reads the property if it is on D-Bus, and sets up the match objects
+     * for the propertiesChanged, interfacesAdded, and nameOwnerChanged
+     * signals.
+     *
+     * Unlike the other constructors, this also registers a nameOwnerChanged
+     * match for the ownerService so the property is read when the service
+     * acquires its D-Bus name.
+     *
+     * @param[in] bus - The sdbusplus bus object
+     * @param[in] path - The D-Bus path of the property
+     * @param[in] interface - The D-Bus interface that contains the property
+     * @param[in] propertyName - The property name
+     * @param[in] service - The D-Bus service to use for the property read.
+     *                      Can be empty to look it up instead.
+     * @param[in] ownerService - The well-known D-Bus name of the service
+     *                           that owns the property. When given, a
+     *                           nameOwnerChanged watch filtered to this name
+     *                           is registered so the property is read
+     *                           when the service acquires its D-Bus name.
+     * @param[in] dataIface - The DataInterface object
+     * @param[in] func - The callback used any time the property is read
+     */
+    PropertyWatcher(sdbusplus::bus_t& bus, const std::string& path,
+                    const std::string& interface,
+                    const std::string& propertyName, const std::string& service,
+                    const std::string& ownerService, const DataIface& dataIface,
+                    PropertySetFunc func) :
+        PropertyWatcher(bus, path, interface, propertyName, service, dataIface,
+                        func)
+    {
+        if (!ownerService.empty())
+        {
+            _matches.emplace_back(
+                bus, match_rules::nameOwnerChanged(ownerService),
+                [this, &dataIface](sdbusplus::message_t& msg) {
+                    std::string name, oldOwner, newOwner;
+                    msg.read(name, oldOwner, newOwner);
+
+                    // newOwner non-empty means the service acquired its
+                    // bus name — read the property now using the unique
+                    // name.
+                    if (!newOwner.empty())
+                    {
+                        try
+                        {
+                            read(dataIface, newOwner);
+                        }
+                        catch (const sdbusplus::exception_t& e)
+                        {
+                            // Property not available yet
+                        }
+                    }
+                });
+        }
+    }
 
     /**
      * @brief Reads the property on D-Bus, and calls
